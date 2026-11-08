@@ -1,0 +1,15 @@
+# Scheduled macro releases the bot may trade with SPY/QQQ nearest-expiry straddles.
+# Each entry: date (ET), time (ET, 24h), name, impact (high|medium), expected_move_pct (your prior for the
+# index's absolute move on that day; the bot only buys when the market-implied move is below expected_move_pct * 0.9).
+# Pre-filled for the week of 2026-11-09 from public calendars; verify against bls.gov before relying on it.
+events:
+  - date: 2026-11-10
+    time: "08:30"
+    name: "US CPI (October 2026)"
+    impact: high
+    expected_move_pct: 0.95
+  - date: 2026-11-13
+    time: "08:30"
+    name: "US PPI (October 2026)"
+    impact: medium
+    expected_move_pct: 0.60

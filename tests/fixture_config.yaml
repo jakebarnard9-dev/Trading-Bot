@@ -1,0 +1,119 @@
+# earnings-bot configuration. Times are America/New_York. Percentages are fractions (0.12 = 12%).
+mode: paper            # paper | live   (live also requires LIVE_TRADING_ACK=I_UNDERSTAND_THE_RISK in .env)
+broker: paper          # paper | ibkr | alpaca
+
+account:
+  starting_equity: 5000        # paper broker seed; live/alpaca/ibkr read equity from the broker
+  initial_equity_for_floor: 5000   # the equity-floor kill switch is measured against this number (floor = 50% -> $500)
+
+schedule:
+  timezone: America/New_York
+  calendar_refresh: "07:45"
+  scan: "12:30"                # build candidate list + LLM theses for today's entries
+  final_pricing: "15:20"       # re-quote with broker prices, final sizing
+  entry_start: "15:30"
+  entry_end: "15:57"
+  eod_report: "16:05"
+  manage_poll_seconds_open: 10     # 09:30-11:30 polling cadence for open positions
+  manage_poll_seconds_late: 30
+
+universe:
+  min_market_cap: 1500000000       # $1B; with a $1,000 account the affordable names are mostly sub-$40 stocks anyway
+  max_new_positions_per_day: 3
+  include_unknown_timing: false    # if true, names with unconfirmed BMO/AMC timing are treated as BMO (entered a day early) with a score penalty
+  allowlist: []                    # if non-empty, only these symbols are considered
+  blocklist: []                    # never trade these
+
+options:
+  max_days_to_expiry_after_reaction: 7     # need a weekly/daily expiry close to the reaction day
+  min_open_interest: 300
+  min_volume: 50
+  max_spread_pct: 0.12                     # (ask-bid)/mid for options priced >= $0.50
+  max_spread_pct_cheap: 0.20               # for options priced < $0.50
+  min_option_price: 0.15
+
+scoring:
+  trade_threshold: 55
+  trade_threshold_without_llm: 65
+  lookback_earnings: 8
+  weights: {hist_ratio: 40, big_move_freq: 20, liquidity: 15, llm: 15, catalyst: 10}
+  unknown_timing_penalty: 10
+
+structures:
+  directional_min_confidence: 0.65     # LLM direction confidence needed to go single-leg
+  directional_target_delta: 0.40
+  strangle_max_width_vs_implied: 0.50  # OTM strangle only if each wing is within 50% of the implied move
+  iv_crush_factor: 0.55                # post-event IV = pre-event IV * factor (payoff simulation)
+
+risk:
+  profile: aggressive
+  per_trade_pct: null
+  max_deployed_pct: null
+  max_open_positions: null
+  daily_loss_limit_pct: null   # stop opening new positions after losing this much of the day's starting equity
+  equity_floor_pct: 0.50       # KILL SWITCH: no new positions once equity <= this fraction of initial_equity_for_floor
+  max_per_sector: 2
+  max_consecutive_losing_days: 3
+  pause_days_after_streak: 1
+  commission_per_contract: 0.65
+  min_cash_reserve: 200
+  pdt_mode: auto            # auto (ask broker for day trades remaining) | enforce (assume 3 per 5 days) | off
+
+exits:
+  salvage_leg_below_pct: 0.25      # sell a straddle/strangle leg once it is worth < 25% of its cost
+  take_half_at_gain_pct: 1.00      # at +100% sell half, trail the rest
+  trail_pct_from_high: 0.25
+  trail_floor_gain_pct: 0.50
+  hard_stop_loss_pct: 0.60
+  hard_stop_not_before: "09:45"
+  default_time_stop: "10:30"
+  winner_time_stop: "11:30"
+  absolute_time_stop: "15:30"
+  zero_dte_time_stop: "15:00"
+  dust_threshold: 0.05             # don't pay commissions to sell options worth less than this
+
+execution:
+  chase_step_pct_of_spread: 0.15
+  chase_interval_seconds: 20
+  max_pay_pct_of_spread: 1.00      # 1.0 = will pay up to the ask; never above
+  exit_chase_interval_seconds: 15
+
+macro:
+  enabled: true
+  symbols: [SPY, QQQ]
+  budget_pct_of_per_trade: 0.5
+  events_file: macro_events.yaml
+
+llm:
+  enabled: true
+  model: claude-opus-5-5
+  effort: high
+  server_fallbacks: true
+  max_headlines: 25
+  timeout_seconds: 240
+
+news:
+  sources: [google_rss, yfinance, finnhub, fmp]
+  lookback_days: 7
+
+notify:
+  telegram: true
+  discord: true
+
+data:
+  calendar_sources: [nasdaq, fmp, yfinance]
+  cache_dir: .cache
+
+state:
+  db_path: state/earnings_bot.sqlite
+
+ibkr:
+  host: 127.0.0.1
+  port: 7496          # TWS live 7496 | Gateway live 4001 | TWS paper 7497 | Gateway paper 4002
+  client_id: 17
+  account: ""         # leave blank for the default account
+  market_data_type: 1 # 1 live (needs OPRA subscription), 3 delayed (NOT acceptable for live trading)
+
+alpaca:
+  paper: true
+  options_feed: indicative   # indicative (free) | opra (subscription)

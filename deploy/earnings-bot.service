@@ -1,0 +1,20 @@
+# systemd unit: sudo cp deploy/earnings-bot.service /etc/systemd/system/ && sudo systemctl enable --now earnings-bot
+# Adjust User= and the paths. The bot is restart-safe: state lives in state/earnings_bot.sqlite and phases are idempotent.
+[Unit]
+Description=earnings-bot autonomous options bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trader
+WorkingDirectory=/home/trader/earnings-bot
+EnvironmentFile=/home/trader/earnings-bot/.env
+ExecStart=/home/trader/earnings-bot/.venv/bin/python -m earnings_bot run
+Restart=always
+RestartSec=15
+KillSignal=SIGTERM
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
