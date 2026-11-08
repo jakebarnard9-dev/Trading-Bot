@@ -67,7 +67,7 @@ def build_engine(cfg: Config, clock: Optional[Clock] = None, overrides: Optional
         macro = load_macro_events(Path(cfg.root) / cfg.macro.events_file) if cfg.macro.enabled else []
     agent_client = o.get("agent_client")
     if agent_client is None and cfg.agents.enabled and cfg.secrets.anthropic_api_key:
-        agent_client = ClaudeAgentClient(cfg.secrets.anthropic_api_key, cfg.agents.model, cfg.agents.effort, cfg.agents.timeout_seconds)
+        agent_client = ClaudeAgentClient(cfg.secrets.anthropic_api_key, cfg.agents.model, cfg.agents.effort, cfg.agents.timeout_seconds, cfg.llm.server_fallbacks)
     researcher = o["researcher"] if "researcher" in o else (CatalystResearcher(agent_client, cfg.agents.max_searches, cfg.agents.max_fetches) if agent_client and cfg.agents.research else None)
     risk_officer = o["risk_officer"] if "risk_officer" in o else (RiskOfficer(agent_client) if agent_client and cfg.agents.risk_officer else None)
     ops = o["ops"] if "ops" in o else (OpsAgent(agent_client, Path(cfg.root) / cfg.agents.journal_dir) if agent_client and cfg.agents.ops else None)

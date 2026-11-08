@@ -54,6 +54,8 @@ def main(argv=None) -> int:
     cfg = load_config(a.config)
     setup_logging(cfg.root, a.verbose)
     log = logging.getLogger("earnings_bot")
+    if a.cmd != "run":
+        cfg.ibkr.client_id += 1   # utilities use their own IBKR client id so they work while the bot is running
 
     if a.cmd == "run":
         cfg.validate_live()

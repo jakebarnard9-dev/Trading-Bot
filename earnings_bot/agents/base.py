@@ -18,7 +18,7 @@ def web_tools(max_searches: int, max_fetches: int) -> list[dict]:
 
 
 class ClaudeAgentClient:
-    def __init__(self, api_key: str, model: str = "claude-opus-5-5", effort: str = "high", timeout: float = 600.0):
+    def __init__(self, api_key: str, model: str = "claude-opus-5-5", effort: str = "high", timeout: float = 600.0, fallbacks: bool = True):
         import anthropic
 
         self._anthropic = anthropic
@@ -26,7 +26,7 @@ class ClaudeAgentClient:
         self.model = model
         self.effort = effort
         self.enabled = bool(api_key)
-        self._fallbacks = True
+        self._fallbacks = bool(fallbacks)
 
     async def research(self, system: str, user: str, max_searches: int = 10, max_fetches: int = 5, max_tokens: int = 24000) -> Optional[str]:
         """One agentic research turn. Returns the model's final text notes (web results are untrusted data)."""

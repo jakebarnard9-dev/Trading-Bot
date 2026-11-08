@@ -79,19 +79,32 @@ class Store:
 
     # ------------------------------------------------------------------ events
     def upsert_events(self, events: list[EarningsEvent]) -> None:
+        """Insert or merge. Non-empty fields never get clobbered by empty ones; sources are unioned; a timing set by the
+        research agent (primary sources) survives a later aggregator refresh unless the research is itself refreshing."""
         now = datetime.now(timezone.utc).isoformat()
         with self._lock:
             for e in events:
+                row = self._conn.execute("SELECT * FROM events WHERE key=?", (e.key,)).fetchone()
+                timing, kind, company, sources = e.timing, e.kind or "earnings", e.company or "", sorted(set(e.sources))
+                market_cap, eps, confirmed = e.market_cap, e.eps_estimate, int(e.confirmed)
+                expected, confidence, notes = e.expected_move_pct, e.confidence, e.notes or ""
+                if row is not None:
+                    old_sources = set(json.loads(row["sources"] or "[]"))
+                    sources = sorted(old_sources | set(e.sources))
+                    company = company or (row["company"] or "")
+                    market_cap = market_cap if market_cap is not None else row["market_cap"]
+                    eps = eps if eps is not None else row["eps_estimate"]
+                    confirmed = int(bool(confirmed) or bool(row["confirmed"]))
+                    expected = expected if expected is not None else row["expected_move_pct"]
+                    confidence = confidence if confidence is not None else row["confidence"]
+                    notes = notes or (row["notes"] or "")
+                    if "research" in old_sources and "research" not in e.sources and row["timing"] not in (None, "unknown"):
+                        timing = row["timing"]
                 self._conn.execute(
-                    """INSERT INTO events(key,symbol,report_date,timing,company,market_cap,eps_estimate,confirmed,sources,updated_at,kind,expected_move_pct,notes,confidence)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                       ON CONFLICT(key) DO UPDATE SET timing=excluded.timing, company=excluded.company,
-                         market_cap=COALESCE(excluded.market_cap, events.market_cap), eps_estimate=COALESCE(excluded.eps_estimate, events.eps_estimate),
-                         confirmed=excluded.confirmed, sources=excluded.sources, updated_at=excluded.updated_at, kind=excluded.kind,
-                         expected_move_pct=COALESCE(excluded.expected_move_pct, events.expected_move_pct), notes=excluded.notes,
-                         confidence=COALESCE(excluded.confidence, events.confidence)""",
-                    (e.key, e.symbol, e.report_date.isoformat(), e.timing, e.company, e.market_cap, e.eps_estimate,
-                     int(e.confirmed), json.dumps(e.sources), now, e.kind, e.expected_move_pct, e.notes or "", e.confidence),
+                    """INSERT OR REPLACE INTO events(key,symbol,report_date,timing,company,market_cap,eps_estimate,confirmed,sources,updated_at,kind,expected_move_pct,notes,confidence)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (e.key, e.symbol, e.report_date.isoformat(), timing, company, market_cap, eps, confirmed, json.dumps(sources), now,
+                     kind, expected, notes, confidence),
                 )
 
     def events_between(self, a: date, b: date) -> list[EarningsEvent]:

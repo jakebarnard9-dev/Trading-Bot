@@ -1,0 +1,71 @@
+# Headless cloud stack: IB Gateway + the bot on one private Docker network. Step-by-step: DEPLOY_CLOUD.md
+#
+#   docker compose -f docker-compose.cloud.yml up -d --build
+#
+# Every ${VAR} below is read from ./.env (see the "IB Gateway" section of .env.example). Nothing is published to the
+# internet: the IB API port is reachable only by the bot inside this compose network, VNC only on 127.0.0.1.
+name: catalyst-bot
+
+services:
+  ib-gateway:
+    # Image, variable names and ports verified 2026-11-08 against https://github.com/gnzsnz/ib-gateway-docker
+    # (README "Supported Tags": stable = IB Gateway 10.50.1f + IBC 3.24.2; tags stable / 10.50 / 10.50.1f).
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    restart: unless-stopped
+    environment:
+      TWS_USERID: ${TWS_USERID:?set TWS_USERID in .env}
+      TWS_PASSWORD: ${TWS_PASSWORD:?set TWS_PASSWORD in .env}
+      TRADING_MODE: ${TRADING_MODE:-paper}                      # live | paper -- the bot's IBKR_PORT below must match
+      READ_ONLY_API: ${READ_ONLY_API:-no}                       # "no", otherwise the bot cannot place orders
+      TWS_ACCEPT_INCOMING: ${TWS_ACCEPT_INCOMING:-accept}       # IBC accepts the bot's API connection, no dialog
+      BYPASS_WARNING: ${BYPASS_WARNING:-yes}                    # API "Precautions" bypass (GO_LIVE.md step 3)
+      VNC_SERVER_PASSWORD: ${VNC_SERVER_PASSWORD:-}             # empty = no VNC server
+      TWOFA_TIMEOUT_ACTION: ${TWOFA_TIMEOUT_ACTION:-restart}    # IB Key push not approved in time -> log in again (new push)
+      RELOGIN_AFTER_TWOFA_TIMEOUT: ${RELOGIN_AFTER_TWOFA_TIMEOUT:-yes}
+      TWOFA_EXIT_INTERVAL: ${TWOFA_EXIT_INTERVAL:-60}
+      TWOFA_DEVICE: ${TWOFA_DEVICE:-}
+      AUTO_RESTART_TIME: ${AUTO_RESTART_TIME:-11:45 PM}         # daily restart that re-uses the session (no push)
+      EXISTING_SESSION_DETECTED_ACTION: ${EXISTING_SESSION_DETECTED_ACTION:-primary}
+      ALLOW_BLIND_TRADING: ${ALLOW_BLIND_TRADING:-no}
+      TIME_ZONE: ${TIME_ZONE:-America/New_York}
+      TZ: ${TIME_ZONE:-America/New_York}
+      TWS_SETTINGS_PATH: ${TWS_SETTINGS_PATH:-}
+      JAVA_HEAP_SIZE: ${JAVA_HEAP_SIZE:-}
+      CUSTOM_CONFIG: ${CUSTOM_CONFIG:-NO}
+    # The API port is deliberately NOT published (upstream README, "Leaving localhost": the IB API is an unencrypted,
+    # unauthenticated TCP socket). Inside the compose network the bot reaches it as ib-gateway:4003 (live) or
+    # ib-gateway:4004 (paper); socat inside the container relays those to the gateway's loopback-only 4001 / 4002.
+    ports:
+      - "127.0.0.1:5900:5900"      # VNC on the VPS loopback only; reach it through an SSH tunnel (DEPLOY_CLOUD.md 5)
+    healthcheck:
+      # healthy = logged in: the gateway opens its API port (4001 live / 4002 paper) only after a successful login.
+      test: ["CMD", "bash", "-c", 'p=4001; [ "$$TRADING_MODE" = paper ] && p=4002; exec 3<>/dev/tcp/127.0.0.1/$$p']
+      interval: 30s
+      timeout: 5s
+      retries: 20
+      start_period: 10m           # first login + IB Key approval; failures in this window are not counted
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override config.yaml ibkr.host / ibkr.port: the gateway is on the compose network, not on localhost.
+      IBKR_HOST: ib-gateway
+      IBKR_PORT: ${IBKR_PORT:-4003}   # 4003 = TRADING_MODE=live, 4004 = TRADING_MODE=paper
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./macro_events.yaml:/app/macro_events.yaml:ro
+      - ./state:/app/state
+      - ./logs:/app/logs
+    depends_on:
+      ib-gateway:
+        condition: service_healthy   # start the bot only once the gateway is logged in
+    stop_grace_period: 2m            # let an in-flight order chase finish on SIGTERM (same as the systemd unit)
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }

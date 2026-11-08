@@ -163,7 +163,11 @@ class AgentsCfg(BaseModel):
     max_fetches: int = 5
     research_days_ahead: int = 7
     journal_dir: str = "journal"
-    timeout_seconds: int = 600
+    timeout_seconds: int = 600             # HTTP client timeout per request
+    research_timeout_seconds: int = 420    # research runs in the background; the 12:30 scan waits at most scan_wait_seconds for it
+    scan_wait_seconds: int = 120
+    risk_officer_timeout_seconds: int = 90 # the 15:20 review must not eat into the entry window
+    ops_timeout_seconds: int = 300
 
 
 class NotifyCfg(BaseModel):

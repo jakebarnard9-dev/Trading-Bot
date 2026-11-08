@@ -1,0 +1,16 @@
+# The Dockerfile does `COPY . .`: keep secrets, local state, caches and the host virtualenv out of the image.
+.env
+.env.*
+!.env.example
+.git/
+.venv/
+.cache/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.egg-info/
+state/*
+!state/.gitkeep
+logs/*
+!logs/.gitkeep
+tws_settings/

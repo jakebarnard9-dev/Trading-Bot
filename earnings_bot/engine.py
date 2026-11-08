@@ -150,24 +150,38 @@ class Engine:
         events = [e for e in events if e.symbol.isascii() and 1 <= len(e.symbol) <= 6]
         self.store.upsert_events(events)
         if self.researcher is not None and getattr(self.researcher, "enabled", False):
-            try:
-                end = d + timedelta(days=self.cfg.agents.research_days_ahead)
-                known = self.store.events_between(d, d + timedelta(days=4))
-                report = await self.researcher.run(d, end, known)
-                new_events, corrected = merge_research(report, d, end, known)
-                if new_events or corrected:
-                    self.store.upsert_events(new_events + corrected)
-                self.store.log_decision("research", "*", {"added": [e.key for e in new_events], "corrected": [e.key for e in corrected],
-                                                          "notes": (report.notes if report else "no report")}, at=self.clock.now())
-                await self.notify(f"research: {len(new_events)} catalyst event(s) added, {len(corrected)} timing/detail correction(s)"
-                                  + (": " + ", ".join(f"{e.symbol} {e.report_date:%a} {e.kind}/{e.timing}" for e in new_events[:12]) if new_events else "")
-                                  + (f" | notes: {report.notes[:400]}" if report and report.notes else ""))
-            except Exception as e:  # noqa: BLE001
-                log.exception("research agent failed")
-                await self.notify(f"research agent failed: {e!r}", "warn")
+            # runs in the background so a slow web-research turn never blocks exit management; the scan waits for it briefly
+            end = d + timedelta(days=self.cfg.agents.research_days_ahead)
+            self._research_task = asyncio.create_task(self._run_research(d, end))
         todays = self.events_for_entry(d)
         await self.notify(f"calendar refreshed: {len(events)} events over the next 10 days; {len(todays)} candidates enter today: "
                           + ", ".join(f"{e.symbol}({e.timing}{'' if e.kind == 'earnings' else ',' + e.kind})" for e in todays[:25]))
+
+    async def _run_research(self, d: date, end: date) -> None:
+        try:
+            known = self.store.events_between(d, end)
+            report = await asyncio.wait_for(self.researcher.run(d, end, known), timeout=self.cfg.agents.research_timeout_seconds)
+            new_events, corrected = merge_research(report, d, end, known)
+            if new_events or corrected:
+                self.store.upsert_events(new_events + corrected)
+            self.store.log_decision("research", "*", {"added": [e.key for e in new_events], "corrected": [e.key for e in corrected],
+                                                      "notes": (report.notes if report else "no report")}, at=self.clock.now())
+            await self.notify(f"research: {len(new_events)} catalyst event(s) added, {len(corrected)} timing/detail correction(s)"
+                              + (": " + ", ".join(f"{e.symbol} {e.report_date:%a} {e.kind}/{e.timing}" for e in new_events[:12]) if new_events else "")
+                              + (f" | notes: {report.notes[:400]}" if report and report.notes else ""))
+        except asyncio.TimeoutError:
+            await self.notify(f"research agent timed out after {self.cfg.agents.research_timeout_seconds}s; trading on the calendar sources only", "warn")
+        except Exception as e:  # noqa: BLE001
+            log.exception("research agent failed")
+            await self.notify(f"research agent failed: {e!r}", "warn")
+
+    async def _await_research(self) -> None:
+        task = getattr(self, "_research_task", None)
+        if task is not None and not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=self.cfg.agents.scan_wait_seconds)
+            except asyncio.TimeoutError:
+                await self.notify("research still running at scan time; scanning without it", "warn")
 
     def events_for_entry(self, d: date) -> list[EarningsEvent]:
         u = self.cfg.universe
@@ -184,8 +198,17 @@ class Engine:
             entry, _ = reaction_and_entry_dates(e.report_date, e.timing)
             if entry == d:
                 out.append(e)
-        out.sort(key=lambda e: -(e.market_cap or 0))
-        return out
+        # one event per symbol per entry day: confirmed first, then the larger expected move, then size
+        out.sort(key=lambda e: (-int(e.confirmed), -(e.expected_move_pct or 0), -(e.market_cap or 0)))
+        seen: set[str] = set()
+        deduped = []
+        for e in out:
+            if e.symbol in seen:
+                continue
+            seen.add(e.symbol)
+            deduped.append(e)
+        deduped.sort(key=lambda e: -(e.market_cap or 0))
+        return deduped
 
     # ------------------------------------------------------------------ candidate construction
     async def build_candidate(self, ev: EarningsEvent, play_type: str = "earnings", macro_event=None) -> Candidate:
@@ -273,6 +296,7 @@ class Engine:
 
     async def scan_and_analyze(self, d: date) -> list[Candidate]:
         now = self.clock.now()
+        await self._await_research()
         events = self.events_for_entry(d)
         sem = asyncio.Semaphore(4)
 
@@ -430,12 +454,14 @@ class Engine:
                     "owner_instructions": "Aggressive mandate: nearest-expiry long premium into scheduled extreme-move events; the owner accepts "
                                           "loss of the deployed premium; the size limits above are deliberate and are not grounds for a veto.",
                 }
-                review = await self.risk_officer.review(plan_lines, context)
+                review = await asyncio.wait_for(self.risk_officer.review(plan_lines, context), timeout=self.cfg.agents.risk_officer_timeout_seconds)
                 for sym, note in apply_review(review, final):
                     self.store.log_decision("risk_officer", sym, note, at=now)
                 if review is not None:
                     review_note = f" | risk officer: {review.overall_note[:300]}"
                 final = [c for c in final if not c.skip_reason]
+            except asyncio.TimeoutError:
+                await self.notify(f"risk officer timed out after {self.cfg.agents.risk_officer_timeout_seconds}s; plan proceeds as sized", "warn")
             except Exception as e:  # noqa: BLE001
                 log.exception("risk officer failed")
                 await self.notify(f"risk officer failed (plan proceeds as sized): {e!r}", "warn")
@@ -585,11 +611,13 @@ class Engine:
                     "decisions": self.store.decisions(80), "halted": self.risk.halt_reason(), "paused_until": self.store.get("paused_until"),
                     "tomorrow_candidates": [f"{e.symbol}({e.timing},{e.kind})" for e in tomorrow][:30],
                 }
-                rep = await self.ops.daily(d, payload)
+                rep = await asyncio.wait_for(self.ops.daily(d, payload), timeout=self.cfg.agents.ops_timeout_seconds)
                 if rep is not None:
                     await self.notify("ops journal: " + rep.summary[:900]
                                       + ("\nissues: " + "; ".join(rep.issues[:5]) if rep.issues else "")
                                       + ("\nproposals (not applied): " + "; ".join(rep.proposals[:5]) if rep.proposals else ""))
+            except asyncio.TimeoutError:
+                await self.notify("ops agent timed out; no journal today", "warn")
             except Exception as e:  # noqa: BLE001
                 log.exception("ops agent failed")
                 await self.notify(f"ops agent failed: {e!r}", "warn")

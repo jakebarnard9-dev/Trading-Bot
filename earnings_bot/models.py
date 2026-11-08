@@ -48,7 +48,8 @@ class EarningsEvent:
 
     @property
     def key(self) -> str:
-        return f"{self.symbol}:{self.report_date.isoformat()}"
+        base = f"{self.symbol}:{self.report_date.isoformat()}"
+        return base if (self.kind or "earnings") == "earnings" else f"{base}:{self.kind}"
 
 
 @dataclass

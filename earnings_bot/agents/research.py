@@ -49,7 +49,8 @@ class CatalystResearcher:
     async def run(self, today: date, end: date, known: list[EarningsEvent]) -> Optional[ResearchReport]:
         if not self.enabled:
             return None
-        known_lines = "\n".join(f"- {e.symbol} {e.report_date.isoformat()} timing={e.timing} sources={','.join(e.sources)}" for e in known[:100]) or "- (none)"
+        soon = [e for e in known if e.report_date <= today + timedelta(days=4) and (e.kind or "earnings") == "earnings"][:100]
+        known_lines = "\n".join(f"- {e.symbol} {e.report_date.isoformat()} timing={e.timing} sources={','.join(e.sources)}" for e in soon) or "- (none)"
         user = (
             f"Today is {today.isoformat()}. Window: {today.isoformat()} through {end.isoformat()} (US sessions).\n\n"
             f"Step 1: find scheduled catalysts in the window (non-earnings first, then high-volatility earnings missing from the list below).\n"
@@ -72,19 +73,24 @@ def _parse_date(s: str) -> Optional[date]:
 
 def merge_research(report: Optional[ResearchReport], start: date, end: date, known: list[EarningsEvent], min_confidence: float = 0.5
                    ) -> tuple[list[EarningsEvent], list[EarningsEvent]]:
-    """Pure merge: returns (new_events, corrected_known_events). Low-confidence or malformed items are dropped."""
+    """Pure merge: returns (new_events, corrected_known_events). Low-confidence or malformed items are dropped.
+    Keys include the event kind, so an FDA date never merges into (or overwrites) an earnings row for the same day.
+    A timing correction that moves an earnings date supersedes the old row (its timing becomes 'unknown')."""
     if report is None:
         return [], []
     by_key = {e.key: e for e in known}
     new: list[EarningsEvent] = []
-    corrected: list[EarningsEvent] = []
-    for ce in list(report.events) + list(report.timing_corrections):
+    corrected: dict[str, EarningsEvent] = {}
+    seen_new: set[str] = set()
+    items = [(ce, False) for ce in report.events] + [(ce, True) for ce in report.timing_corrections]
+    for ce, is_correction in items:
         sym = ce.symbol.strip().upper()
         d = _parse_date(ce.date)
         if not SYMBOL_RE.match(sym) or d is None or not (start <= d <= end) or ce.confidence < min_confidence:
             continue
-        key = f"{sym}:{d.isoformat()}"
-        notes = f"{ce.kind}: {ce.description} [{ce.source_url}]"
+        kind = ce.kind or "earnings"
+        key = f"{sym}:{d.isoformat()}" if kind == "earnings" else f"{sym}:{d.isoformat()}:{kind}"
+        notes = f"{kind}: {ce.description} [{ce.source_url}]"
         if key in by_key:
             e = by_key[key]
             changed = False
@@ -98,12 +104,24 @@ def merge_research(report: Optional[ResearchReport], start: date, end: date, kno
                 e.sources = sorted(set(e.sources) | {"research"})
                 changed = True
             e.confidence = max(e.confidence or 0.0, ce.confidence)
-            e.notes = (e.notes + " | " if e.notes else "") + notes if changed else e.notes
             if changed:
-                corrected.append(e)
+                e.notes = (e.notes + " | " if e.notes else "") + notes
+                corrected[e.key] = e
             continue
-        if ce.kind == "earnings" and ce.timing == "unknown":
+        if kind == "earnings":
+            if ce.timing == "unknown":
+                continue
+            if is_correction and ce.confidence >= 0.7:
+                # the same company's earnings sit on another date in the calendar: supersede that row
+                for e in known:
+                    if e.symbol == sym and (e.kind or "earnings") == "earnings" and e.report_date != d and abs((e.report_date - d).days) <= 7:
+                        e.timing = "unknown"
+                        e.notes = (e.notes + " | " if e.notes else "") + f"superseded by research: date moved to {d.isoformat()} [{ce.source_url}]"
+                        e.sources = sorted(set(e.sources) | {"research"})
+                        corrected[e.key] = e
+        if key in seen_new:
             continue
+        seen_new.add(key)
         new.append(EarningsEvent(sym, d, ce.timing, "", None, None, ce.confidence >= 0.7, ["research"],
-                                 kind=ce.kind, expected_move_pct=ce.expected_abs_move_pct or None, confidence=ce.confidence, notes=notes))
-    return new, corrected
+                                 kind=kind, expected_move_pct=ce.expected_abs_move_pct or None, confidence=ce.confidence, notes=notes))
+    return new, list(corrected.values())
