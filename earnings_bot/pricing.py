@@ -168,6 +168,7 @@ class SimResult:
     median_return: float
     p_profit: float
     p_double: float
+    p_triple: float
     p_lose_half: float
     growth: float  # expected log growth at the given fraction of equity
     cost: float  # per-share cost of one unit
@@ -189,7 +190,7 @@ def simulate_structure(
     legs = list(legs)
     cost = sum(q * px for (_, _, q, px) in legs)
     if cost <= 0:
-        return SimResult(0, 0, 0, 0, 1, -1, cost)
+        return SimResult(0, 0, 0, 0, 0, 1, -1, cost)
     S_new = np.maximum(spot * (1.0 + scenarios / 100.0), 1e-6)
     value = np.zeros_like(S_new)
     T = max(t_exit_years, 0.0)
@@ -207,6 +208,7 @@ def simulate_structure(
         median_return=float(np.median(pnl)),
         p_profit=float((pnl > 0).mean()),
         p_double=float((pnl >= 1.0).mean()),
+        p_triple=float((pnl >= 2.0).mean()),
         p_lose_half=float((pnl <= -0.5).mean()),
         growth=growth,
         cost=cost,

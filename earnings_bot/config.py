@@ -14,6 +14,9 @@ RISK_PROFILES = {
     "conservative": dict(per_trade_pct=0.05, max_deployed_pct=0.25, max_open_positions=3, daily_loss_limit_pct=0.15),
     "aggressive": dict(per_trade_pct=0.12, max_deployed_pct=0.60, max_open_positions=4, daily_loss_limit_pct=0.25),
     "max": dict(per_trade_pct=0.20, max_deployed_pct=0.80, max_open_positions=4, daily_loss_limit_pct=0.35),
+    # 'unlimited': the user accepts total loss of deployed capital. Up to half the account on the single best idea,
+    # everything deployable across the day's picks, no daily loss stop; only the equity floor remains as a last brake.
+    "unlimited": dict(per_trade_pct=0.50, max_deployed_pct=1.0, max_open_positions=3, daily_loss_limit_pct=1.0),
 }
 
 
@@ -36,6 +39,7 @@ class ScheduleCfg(BaseModel):
 
 class UniverseCfg(BaseModel):
     min_market_cap: float = 1.5e9
+    min_implied_move_pct: float = 0.0        # only consider names whose market-implied move is at least this (percent)
     max_new_positions_per_day: int = 3
     include_unknown_timing: bool = False
     allowlist: list[str] = Field(default_factory=list)
@@ -68,14 +72,19 @@ class ScoringCfg(BaseModel):
 
 
 class StructuresCfg(BaseModel):
+    objective: Literal["growth", "aggressive", "moonshot"] = "growth"
     directional_min_confidence: float = 0.65
     directional_target_delta: float = 0.40
+    directional_deltas: list[float] = Field(default_factory=lambda: [0.40])
     strangle_max_width_vs_implied: float = 0.50
+    strangle_widths: list[float] = Field(default_factory=lambda: [0.25, 0.50])
     iv_crush_factor: float = 0.55
+    min_expected_return: float = 0.03        # structure must clear this simulated expected return after IV crush
+    aggressive_min_p_profit: float = 0.20    # 'aggressive'/'moonshot' objectives still require this probability of profit
 
 
 class RiskCfg(BaseModel):
-    profile: Literal["conservative", "aggressive", "max"] = "aggressive"
+    profile: Literal["conservative", "aggressive", "max", "unlimited"] = "aggressive"
     per_trade_pct: Optional[float] = None
     max_deployed_pct: Optional[float] = None
     max_open_positions: Optional[int] = None
@@ -94,9 +103,9 @@ class RiskCfg(BaseModel):
         for k, v in prof.items():
             if getattr(self, k) is None:
                 setattr(self, k, v)
-        # hard sanity bounds: nothing in config can make a single position exceed 25% or deployment exceed 85%
-        self.per_trade_pct = min(float(self.per_trade_pct), 0.25)
-        self.max_deployed_pct = min(float(self.max_deployed_pct), 0.85)
+        # bounds are the physical ones only: a cash account cannot spend more than 100% of itself
+        self.per_trade_pct = max(min(float(self.per_trade_pct), 1.0), 0.0)
+        self.max_deployed_pct = max(min(float(self.max_deployed_pct), 1.0), 0.0)
         self.equity_floor_pct = max(min(self.equity_floor_pct, 0.95), 0.0)
         return self
 
@@ -141,6 +150,20 @@ class LLMCfg(BaseModel):
 class NewsCfg(BaseModel):
     sources: list[str] = Field(default_factory=lambda: ["google_rss", "yfinance", "finnhub", "fmp"])
     lookback_days: int = 7
+
+
+class AgentsCfg(BaseModel):
+    enabled: bool = True
+    research: bool = True          # catalyst researcher (server-side web search) at the morning calendar refresh
+    risk_officer: bool = True      # reviews the final plan; can only approve, reduce or veto
+    ops: bool = True               # daily journal + proposals at the end of day
+    model: str = "claude-opus-5-5"
+    effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    max_searches: int = 10
+    max_fetches: int = 5
+    research_days_ahead: int = 7
+    journal_dir: str = "journal"
+    timeout_seconds: int = 600
 
 
 class NotifyCfg(BaseModel):
@@ -198,6 +221,7 @@ class Config(BaseModel):
     macro: MacroCfg = MacroCfg()
     llm: LLMCfg = LLMCfg()
     news: NewsCfg = NewsCfg()
+    agents: AgentsCfg = AgentsCfg()
     notify: NotifyCfg = NotifyCfg()
     data: DataCfg = DataCfg()
     state: StateCfg = StateCfg()
@@ -248,6 +272,12 @@ def load_config(path: str | Path = "config.yaml", env_file: str | Path | None = 
         raw["mode"] = os.getenv("BOT_MODE")
     if os.getenv("BOT_BROKER"):
         raw["broker"] = os.getenv("BOT_BROKER")
+    if os.getenv("IBKR_HOST") or os.getenv("IBKR_PORT"):
+        raw.setdefault("ibkr", {})
+        if os.getenv("IBKR_HOST"):
+            raw["ibkr"]["host"] = os.getenv("IBKR_HOST")
+        if os.getenv("IBKR_PORT"):
+            raw["ibkr"]["port"] = int(os.getenv("IBKR_PORT"))
     cfg = Config(**raw)
     cfg.root = root
     return cfg

@@ -23,7 +23,9 @@ def _pos(symbol="AAA", cost=600.0, remaining=1):
 def test_profiles_and_bounds():
     assert Config(risk={"profile": "conservative"}).risk.per_trade_pct == 0.05
     assert Config(risk={"profile": "max"}).risk.max_deployed_pct == 0.80
-    assert Config(risk={"profile": "max", "per_trade_pct": 0.9}).risk.per_trade_pct == 0.25  # hard cap
+    assert Config(risk={"profile": "max", "per_trade_pct": 0.9}).risk.per_trade_pct == 0.9    # caps are the owner's call
+    assert Config(risk={"profile": "unlimited", "per_trade_pct": 1.5}).risk.per_trade_pct == 1.0  # ...up to the physical 100%
+    assert Config(risk={"profile": "unlimited"}).risk.daily_loss_limit_pct == 1.0
 
 
 def test_sizing_and_gates(tmp_path):

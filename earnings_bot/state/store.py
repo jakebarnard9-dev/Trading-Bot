@@ -52,6 +52,10 @@ class Store:
         self._conn.execute("PRAGMA journal_mode=WAL")
         with self._lock:
             self._conn.executescript(SCHEMA)
+            cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(events)").fetchall()}
+            for col, decl in (("kind", "TEXT DEFAULT 'earnings'"), ("expected_move_pct", "REAL"), ("notes", "TEXT DEFAULT ''"), ("confidence", "REAL")):
+                if col not in cols:
+                    self._conn.execute(f"ALTER TABLE events ADD COLUMN {col} {decl}")
 
     # ------------------------------------------------------------------ helpers
     def _exec(self, sql: str, params: tuple = ()):
@@ -79,20 +83,23 @@ class Store:
         with self._lock:
             for e in events:
                 self._conn.execute(
-                    """INSERT INTO events(key,symbol,report_date,timing,company,market_cap,eps_estimate,confirmed,sources,updated_at)
-                       VALUES(?,?,?,?,?,?,?,?,?,?)
+                    """INSERT INTO events(key,symbol,report_date,timing,company,market_cap,eps_estimate,confirmed,sources,updated_at,kind,expected_move_pct,notes,confidence)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                        ON CONFLICT(key) DO UPDATE SET timing=excluded.timing, company=excluded.company,
-                         market_cap=excluded.market_cap, eps_estimate=excluded.eps_estimate, confirmed=excluded.confirmed,
-                         sources=excluded.sources, updated_at=excluded.updated_at""",
+                         market_cap=COALESCE(excluded.market_cap, events.market_cap), eps_estimate=COALESCE(excluded.eps_estimate, events.eps_estimate),
+                         confirmed=excluded.confirmed, sources=excluded.sources, updated_at=excluded.updated_at, kind=excluded.kind,
+                         expected_move_pct=COALESCE(excluded.expected_move_pct, events.expected_move_pct), notes=excluded.notes,
+                         confidence=COALESCE(excluded.confidence, events.confidence)""",
                     (e.key, e.symbol, e.report_date.isoformat(), e.timing, e.company, e.market_cap, e.eps_estimate,
-                     int(e.confirmed), json.dumps(e.sources), now),
+                     int(e.confirmed), json.dumps(e.sources), now, e.kind, e.expected_move_pct, e.notes or "", e.confidence),
                 )
 
     def events_between(self, a: date, b: date) -> list[EarningsEvent]:
         rows = self._rows("SELECT * FROM events WHERE report_date BETWEEN ? AND ? ORDER BY report_date, symbol", (a.isoformat(), b.isoformat()))
         return [
             EarningsEvent(r["symbol"], date.fromisoformat(r["report_date"]), r["timing"], r["company"] or "", r["market_cap"],
-                          r["eps_estimate"], bool(r["confirmed"]), json.loads(r["sources"] or "[]"))
+                          r["eps_estimate"], bool(r["confirmed"]), json.loads(r["sources"] or "[]"),
+                          kind=r["kind"] or "earnings", expected_move_pct=r["expected_move_pct"], confidence=r["confidence"], notes=r["notes"] or "")
             for r in rows
         ]
 

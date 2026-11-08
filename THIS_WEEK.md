@@ -5,16 +5,17 @@ Calendar sourced on Nov 8 from Nasdaq's earnings calendar (via StockTitan's Nov 
 up automatically. Macro dates: BLS schedule as reported by public calendars (CPI Tue 08:30, PPI Fri 08:30).
 Wednesday Nov 11 is Veterans Day — the stock market is open; no major US data that day.
 
-## The $50k question, plainly (account is now ~$1,000)
+## The $50k question, plainly (account will be ~$5,000)
 
 - 10× in five sessions needs the account to compound ≈ +58% per session.
-- The account holds about $1,000, so the configured limits are 20% ($200) per position and 50% ($500) at risk at once;
-  even if every position doubled every day the account would reach roughly $7,600 by Friday, not $50,000.
+- The shipped configuration is the owner's unlimited profile: up to 50% of equity on the best idea, 100% deployable,
+  no daily stop, equity floor at 20%. If every position doubled every session the account would be near $50,000 by
+  Friday; that sequence is a lottery outcome, and the same configuration can lose most of the account in two sessions.
 - Long earnings premium wins roughly 40–45% of the time; typical winners +60–150%, typical losers −50–70%.
   Selectivity (history ratio, liquidity, analyst veto, no-edge-after-crush filter) is the only lever, and it means
   some days the bot trades nothing.
-- What the limits do promise: at most $500 at risk at any time, a halt below $500 of equity, and a 35% daily loss ends
-  new entries for the day. Losses can never exceed the premium actually paid.
+- What the limits do promise: new entries stop once equity is at or below $1,000 (20% floor). Losses can never exceed
+  the premium actually paid; there is no margin in a cash account.
 
 ## Entry schedule (enter 15:30–15:57 ET, exit the next morning)
 
@@ -40,6 +41,12 @@ Fed speakers all week (Bowman, Goolsbee, Barkin, Waller, Logan, Schmid, Hammack,
 Note the context: midterms were Nov 3, AI-chip names sold off hard on Nov 5, and Nvidia/Disney report the following
 week (Nov 17) — expect elevated implied moves in CRWV, NBIS, AMAT, CBRS; the history-ratio filter is what keeps the bot
 from overpaying for them.
+
+## Extra this week from the research agent
+
+At 07:45 the researcher searches for dated catalysts beyond earnings (FDA PDUFA dates, advisory committees, index
+rebalances, product reveals, rulings) and confirms earnings timing on investor-relations pages. Anything it finds is
+scored and sized like an earnings play; the Telegram message at 07:45 lists what it added.
 
 ## What you should do before Monday 15:30 ET
 

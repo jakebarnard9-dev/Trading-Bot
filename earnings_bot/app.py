@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+from .agents import CatalystResearcher, ClaudeAgentClient, OpsAgent, RiskOfficer
 from .analysis.llm import ClaudeAnalyst, NullAnalyst
 from .broker.alpaca import AlpacaBroker
 from .broker.ibkr import IBKRBroker
@@ -64,4 +65,10 @@ def build_engine(cfg: Config, clock: Optional[Clock] = None, overrides: Optional
     macro = o.get("macro_events")
     if macro is None:
         macro = load_macro_events(Path(cfg.root) / cfg.macro.events_file) if cfg.macro.enabled else []
-    return Engine(cfg, store, clock, broker, md, cal, news, analyst, notifier, risk, executor, macro)
+    agent_client = o.get("agent_client")
+    if agent_client is None and cfg.agents.enabled and cfg.secrets.anthropic_api_key:
+        agent_client = ClaudeAgentClient(cfg.secrets.anthropic_api_key, cfg.agents.model, cfg.agents.effort, cfg.agents.timeout_seconds)
+    researcher = o["researcher"] if "researcher" in o else (CatalystResearcher(agent_client, cfg.agents.max_searches, cfg.agents.max_fetches) if agent_client and cfg.agents.research else None)
+    risk_officer = o["risk_officer"] if "risk_officer" in o else (RiskOfficer(agent_client) if agent_client and cfg.agents.risk_officer else None)
+    ops = o["ops"] if "ops" in o else (OpsAgent(agent_client, Path(cfg.root) / cfg.agents.journal_dir) if agent_client and cfg.agents.ops else None)
+    return Engine(cfg, store, clock, broker, md, cal, news, analyst, notifier, risk, executor, macro, researcher=researcher, risk_officer=risk_officer, ops=ops)

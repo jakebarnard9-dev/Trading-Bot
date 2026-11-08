@@ -8,6 +8,8 @@ from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from typing import Optional
 
+from .agents.research import merge_research
+from .agents.risk_officer import apply_review
 from .analysis.scoring import final_score, liquidity_ok, liquidity_quality, quant_score
 from .clock import ET, at, is_trading_day, market_phase, next_trading_day, parse_hhmm, reaction_and_entry_dates
 from .config import Config
@@ -47,8 +49,12 @@ def candidate_payload(c: Candidate) -> dict:
 
 
 class Engine:
-    def __init__(self, cfg: Config, store, clock, broker, md, calendar_sources, news, analyst, notifier, risk, executor, macro_events=None):
+    def __init__(self, cfg: Config, store, clock, broker, md, calendar_sources, news, analyst, notifier, risk, executor, macro_events=None,
+                 researcher=None, risk_officer=None, ops=None):
         self.cfg = cfg
+        self.researcher = researcher
+        self.risk_officer = risk_officer
+        self.ops = ops
         self.store = store
         self.clock = clock
         self.broker = broker
@@ -143,9 +149,25 @@ class Engine:
         events = await fetch_all(self.calendar_sources, d, d + timedelta(days=10))
         events = [e for e in events if e.symbol.isascii() and 1 <= len(e.symbol) <= 6]
         self.store.upsert_events(events)
+        if self.researcher is not None and getattr(self.researcher, "enabled", False):
+            try:
+                end = d + timedelta(days=self.cfg.agents.research_days_ahead)
+                known = self.store.events_between(d, d + timedelta(days=4))
+                report = await self.researcher.run(d, end, known)
+                new_events, corrected = merge_research(report, d, end, known)
+                if new_events or corrected:
+                    self.store.upsert_events(new_events + corrected)
+                self.store.log_decision("research", "*", {"added": [e.key for e in new_events], "corrected": [e.key for e in corrected],
+                                                          "notes": (report.notes if report else "no report")}, at=self.clock.now())
+                await self.notify(f"research: {len(new_events)} catalyst event(s) added, {len(corrected)} timing/detail correction(s)"
+                                  + (": " + ", ".join(f"{e.symbol} {e.report_date:%a} {e.kind}/{e.timing}" for e in new_events[:12]) if new_events else "")
+                                  + (f" | notes: {report.notes[:400]}" if report and report.notes else ""))
+            except Exception as e:  # noqa: BLE001
+                log.exception("research agent failed")
+                await self.notify(f"research agent failed: {e!r}", "warn")
         todays = self.events_for_entry(d)
         await self.notify(f"calendar refreshed: {len(events)} events over the next 10 days; {len(todays)} candidates enter today: "
-                          + ", ".join(f"{e.symbol}({e.timing})" for e in todays[:25]))
+                          + ", ".join(f"{e.symbol}({e.timing}{'' if e.kind == 'earnings' else ',' + e.kind})" for e in todays[:25]))
 
     def events_for_entry(self, d: date) -> list[EarningsEvent]:
         u = self.cfg.universe
@@ -167,6 +189,8 @@ class Engine:
 
     # ------------------------------------------------------------------ candidate construction
     async def build_candidate(self, ev: EarningsEvent, play_type: str = "earnings", macro_event=None) -> Candidate:
+        if play_type == "earnings" and (ev.kind or "earnings") != "earnings":
+            play_type = "catalyst"
         c = Candidate(ev, play_type=play_type)
         sym = ev.symbol
         try:
@@ -197,6 +221,9 @@ class Engine:
                 c.skip_reason = "could not compute implied move (no two-sided ATM market)"
                 return c
             c.implied_move_pct, c.atm_strike, c.straddle_mid = im.pct, im.atm_strike, im.straddle_mid
+            if play_type != "macro" and self.cfg.universe.min_implied_move_pct and im.pct < self.cfg.universe.min_implied_move_pct:
+                c.skip_reason = f"implied move {im.pct:.1f}% below the {self.cfg.universe.min_implied_move_pct:.0f}% minimum for this mandate"
+                return c
             atm = [q for q in (chain.call(im.atm_strike), chain.put(im.atm_strike)) if q]
             for q in atm:
                 ok, why = liquidity_ok(q, self.cfg.options)
@@ -210,9 +237,12 @@ class Engine:
                 past = await self.md.past_earnings_dates(sym, self.cfg.scoring.lookback_earnings + 4)
                 c.history = compute_moves(bars, past, ev.timing, self.cfg.scoring.lookback_earnings)
                 c.hist_stats = history_stats(c.history, im.pct)
+            elif play_type == "catalyst":
+                c.hist_stats = {"n": 0, "kind": ev.kind, "research_expected_move_pct": ev.expected_move_pct,
+                                "research_confidence": ev.confidence, "notes": ev.notes}
             c.catalyst = price_features(bars)
-            if play_type == "earnings":
-                c.catalyst["estimates"] = await self.md.estimates(sym)
+            if play_type in ("earnings", "catalyst"):
+                c.catalyst["estimates"] = await self.md.estimates(sym) if play_type == "earnings" else {}
                 c.catalyst["peers"] = self._peer_reactions(c.profile.get("sector"))
                 c.headlines = await self.news.headlines(sym, c.profile.get("name") or ev.company)
             else:
@@ -270,7 +300,7 @@ class Engine:
                     c.skip_reason = f"macro: {why}"
                 continue
             c.quant_score, c.score_breakdown = quant_score(c, self.cfg.scoring)
-        ranked = sorted([c for c in cands if not c.skip_reason and c.play_type == "earnings"], key=lambda c: c.quant_score, reverse=True)
+        ranked = sorted([c for c in cands if not c.skip_reason and c.play_type in ("earnings", "catalyst")], key=lambda c: c.quant_score, reverse=True)
 
         # analyst on the top names only (cached per day so restarts don't re-spend)
         floor = self.cfg.scoring.trade_threshold_without_llm - 25
@@ -294,7 +324,7 @@ class Engine:
         for c in cands:
             if c.skip_reason:
                 continue
-            if c.play_type == "earnings":
+            if c.play_type in ("earnings", "catalyst"):
                 c.score, c.score_breakdown = final_score(c, self.cfg.scoring)
                 threshold = self.cfg.scoring.trade_threshold if c.thesis else self.cfg.scoring.trade_threshold_without_llm
                 if c.score < threshold:
@@ -379,10 +409,40 @@ class Engine:
             planned += c.plan.est_total_cost
             open_sectors.append(sector)
             final.append(c)
+        review_note = ""
+        if final and self.risk_officer is not None and getattr(self.risk_officer, "enabled", False):
+            try:
+                r = self.cfg.risk
+                start = self.store.start_day(d, acct.equity)
+                plan_lines = [{
+                    "symbol": c.symbol, "play_type": c.play_type, "event_date": c.event.report_date, "timing": c.event.timing, "event_kind": c.event.kind,
+                    "reaction_date": c.reaction_date, "expiry": c.expiry, "spot": c.spot, "implied_move_pct": c.implied_move_pct,
+                    "structure": c.plan.kind, "legs": [{"key": str(l.key), "bid": l.ref_bid, "ask": l.ref_ask, "delta": l.delta} for l in c.plan.legs],
+                    "units": c.plan.units, "est_total_cost": c.plan.est_total_cost, "score": c.score, "sector": c.profile.get("sector"),
+                    "thesis": c.thesis.model_dump() if c.thesis else None, "sim": c.plan.sim, "liquidity": c.liquidity,
+                } for c in final]
+                context = {
+                    "now": now, "equity": acct.equity, "cash_available": acct.cash, "day_start_equity": start,
+                    "day_pnl_pct": (acct.equity / start - 1.0) if start else 0.0, "halted": self.risk.halt_reason(),
+                    "open_positions": [{"id": p.id, "symbol": p.symbol, "at_risk": p.remaining_cost(), "sector": p.meta.get("sector")} for p in open_positions],
+                    "limits": {"per_trade_pct": r.per_trade_pct, "max_deployed_pct": r.max_deployed_pct, "max_open_positions": r.max_open_positions,
+                               "daily_loss_limit_pct": r.daily_loss_limit_pct, "equity_floor": self.risk.equity_floor()},
+                    "owner_instructions": "Aggressive mandate: nearest-expiry long premium into scheduled extreme-move events; the owner accepts "
+                                          "loss of the deployed premium; the size limits above are deliberate and are not grounds for a veto.",
+                }
+                review = await self.risk_officer.review(plan_lines, context)
+                for sym, note in apply_review(review, final):
+                    self.store.log_decision("risk_officer", sym, note, at=now)
+                if review is not None:
+                    review_note = f" | risk officer: {review.overall_note[:300]}"
+                final = [c for c in final if not c.skip_reason]
+            except Exception as e:  # noqa: BLE001
+                log.exception("risk officer failed")
+                await self.notify(f"risk officer failed (plan proceeds as sized): {e!r}", "warn")
         self._final[d] = final
         for c in selected:
             self.store.save_candidate(d, c.symbol, c.play_type, c.score, c.quant_score, candidate_payload(c))
-        lines = [f"final plan {d} (equity ${acct.equity:,.0f}, cash ${acct.cash:,.0f}):"]
+        lines = [f"final plan {d} (equity ${acct.equity:,.0f}, cash ${acct.cash:,.0f}){review_note}:"]
         for c in final:
             lines.append(f"  BUY {c.plan.units}x {c.plan.kind} {c.symbol}: " + " + ".join(f"{l.key} @<= {l.ref_ask:.2f}" for l in c.plan.legs) + f" ~ ${c.plan.est_total_cost:,.0f}")
         for c in selected:
@@ -512,6 +572,27 @@ class Engine:
         if self.risk.halt_reason():
             msg += f" | HALTED: {self.risk.halt_reason()}"
         await self.notify(msg)
+        if self.ops is not None and getattr(self.ops, "enabled", False):
+            try:
+                payload = {
+                    "day": d, "equity": acct.equity, "day_start_equity": start, "realized_today": realized, "exit_fills": n_exits,
+                    "closed_positions": [{"id": p.id, "pnl": p.realized_pnl, "cost": p.cost_basis, "notes": p.notes[-8:],
+                                          "implied_move_pct": p.meta.get("implied_move_pct"), "realized_move_pct": p.meta.get("realized_move_pct"),
+                                          "score": p.meta.get("score")} for p in closed_today],
+                    "open_positions": [{"id": p.id, "at_risk": p.remaining_cost(), "reaction_date": p.reaction_date} for p in opens],
+                    "candidates": [{"symbol": r["symbol"], "play_type": r["play_type"], "score": r["score"], "skip_reason": r["payload"].get("skip_reason"),
+                                    "plan": r["payload"].get("plan")} for r in self.store.candidates_for(d)][:40],
+                    "decisions": self.store.decisions(80), "halted": self.risk.halt_reason(), "paused_until": self.store.get("paused_until"),
+                    "tomorrow_candidates": [f"{e.symbol}({e.timing},{e.kind})" for e in tomorrow][:30],
+                }
+                rep = await self.ops.daily(d, payload)
+                if rep is not None:
+                    await self.notify("ops journal: " + rep.summary[:900]
+                                      + ("\nissues: " + "; ".join(rep.issues[:5]) if rep.issues else "")
+                                      + ("\nproposals (not applied): " + "; ".join(rep.proposals[:5]) if rep.proposals else ""))
+            except Exception as e:  # noqa: BLE001
+                log.exception("ops agent failed")
+                await self.notify(f"ops agent failed: {e!r}", "warn")
 
     # ------------------------------------------------------------------ reconcile / flatten / status
     async def reconcile(self) -> None:

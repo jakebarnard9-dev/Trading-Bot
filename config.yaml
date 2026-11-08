@@ -3,8 +3,8 @@ mode: live             # paper | live   (live also requires LIVE_TRADING_ACK=I_U
 broker: ibkr           # paper | ibkr | alpaca
 
 account:
-  starting_equity: 1000        # paper broker seed; live/alpaca/ibkr read equity from the broker
-  initial_equity_for_floor: 1000   # the equity-floor kill switch is measured against this number (floor = 50% -> $500)
+  starting_equity: 5000        # paper broker seed; live/alpaca/ibkr read equity from the broker
+  initial_equity_for_floor: 5000   # the equity-floor kill switch is measured against this number (floor = 20% -> $1,000)
 
 schedule:
   timezone: America/New_York
@@ -18,14 +18,15 @@ schedule:
   manage_poll_seconds_late: 30
 
 universe:
-  min_market_cap: 1000000000       # $1B; with a $1,000 account the affordable names are mostly sub-$40 stocks anyway
+  min_market_cap: 1000000000       # $1B
+  min_implied_move_pct: 6.0        # only names the market already prices for an extreme move (>= 6%); 0 disables
   max_new_positions_per_day: 3
   include_unknown_timing: false    # if true, names with unconfirmed BMO/AMC timing are treated as BMO (entered a day early) with a score penalty
   allowlist: []                    # if non-empty, only these symbols are considered
   blocklist: []                    # never trade these
 
 options:
-  max_days_to_expiry_after_reaction: 7     # need a weekly/daily expiry close to the reaction day
+  max_days_to_expiry_after_reaction: 4     # nearest listed expiry only (0 DTE on reaction day when listed; Monday reporters get Friday weeklies)
   min_open_interest: 300
   min_volume: 50
   max_spread_pct: 0.12                     # (ask-bid)/mid for options priced >= $0.50
@@ -40,23 +41,28 @@ scoring:
   unknown_timing_penalty: 10
 
 structures:
+  objective: aggressive                # growth (Kelly-like) | aggressive (max expected return, p_profit floor) | moonshot (max P(3x))
   directional_min_confidence: 0.65     # LLM direction confidence needed to go single-leg
   directional_target_delta: 0.40
-  strangle_max_width_vs_implied: 0.50  # OTM strangle only if each wing is within 50% of the implied move
+  directional_deltas: [0.40, 0.30]     # also evaluate further-OTM contracts for convexity
+  strangle_max_width_vs_implied: 0.50
+  strangle_widths: [0.25, 0.50, 0.75]  # wings as a fraction of the implied move
   iv_crush_factor: 0.55                # post-event IV = pre-event IV * factor (payoff simulation)
+  min_expected_return: 0.05            # simulated edge after crush required to trade at all
+  aggressive_min_p_profit: 0.20
 
 risk:
-  profile: max              # conservative | aggressive | max  (sets the four values below unless you override them)
-  per_trade_pct: 0.20       # $1,000 account: $200 of premium per position (one cheap straddle or one directional contract)
-  max_deployed_pct: 0.50    # never more than half the account at risk overnight, so one bad day cannot breach the 50% floor
+  profile: unlimited        # conservative | aggressive | max | unlimited  (owner's choice: no loss limit beyond the floor)
+  per_trade_pct: 0.50       # up to half the account on the single best idea; the rest on the next-best
+  max_deployed_pct: 1.00    # everything can be at risk overnight
   max_open_positions: 3
-  daily_loss_limit_pct: 0.35   # stop opening new positions after losing this much of the day's starting equity
-  equity_floor_pct: 0.50       # KILL SWITCH: no new positions once equity <= this fraction of initial_equity_for_floor
+  daily_loss_limit_pct: 1.00   # 1.0 = no daily stop
+  equity_floor_pct: 0.20       # last brake: no new positions once equity <= 20% of initial_equity_for_floor; set 0 to remove
   max_per_sector: 2
-  max_consecutive_losing_days: 3
+  max_consecutive_losing_days: 99   # streak pause effectively off
   pause_days_after_streak: 1
   commission_per_contract: 0.65
-  min_cash_reserve: 200
+  min_cash_reserve: 0
   pdt_mode: auto            # auto (ask broker for day trades remaining) | enforce (assume 3 per 5 days) | off
 
 exits:
@@ -91,6 +97,19 @@ llm:
   server_fallbacks: true
   max_headlines: 25
   timeout_seconds: 240
+
+agents:
+  enabled: true
+  research: true            # 07:45 catalyst researcher (Claude + server-side web search): PDUFA/regulatory/product/index events + timing confirmation
+  risk_officer: true        # 15:20 integrity review of the sized plan; approve / reduce / veto only
+  ops: true                 # 16:05 journal in journal/YYYY-MM-DD.md with issues and proposals
+  model: claude-opus-5-5
+  effort: high
+  max_searches: 10
+  max_fetches: 5
+  research_days_ahead: 7
+  journal_dir: journal
+  timeout_seconds: 600
 
 news:
   sources: [google_rss, yfinance, finnhub, fmp]

@@ -1,4 +1,4 @@
-# earnings-bot
+# catalyst-bot
 
 An autonomous, nearest-expiry (0–1 DTE where listed) **long-premium options bot** for earnings reports and scheduled macro
 releases. It pulls the earnings calendar, prices the market-implied move against each name's own history and a Claude
@@ -8,7 +8,8 @@ manages the exit in the first hours of the reaction session under hard, code-enf
 Runs in **paper mode by default**. Live trading is supported through **Interactive Brokers** (TWS / IB Gateway via
 `ib_async`) or **Alpaca** (REST), and is gated behind an explicit acknowledgement in `.env`.
 
-> Read `GO_LIVE.md` for the IBKR go-live runbook (configured for the funded ~$1,000 cash account) and `THIS_WEEK.md` for the Nov 9–13, 2026 plan.
+> Read `GO_LIVE.md` (IBKR go-live on your PC with TWS, or `DEPLOY_CLOUD.md` for a headless VPS) and `THIS_WEEK.md` for the Nov 9–13, 2026 plan.
+> The shipped `config.yaml` is the **aggressive, unlimited-risk** configuration the owner asked for; see §5 and §11.
 
 ---
 
@@ -87,7 +88,7 @@ positions, and a restart re-attaches any position whose fills were recorded but 
 
 ---
 
-## 5. Risk model
+## 5. Risk model and the aggressive configuration
 
 | Limit | conservative | **aggressive (default)** | max |
 |---|---|---|---|
@@ -96,10 +97,13 @@ positions, and a restart re-attaches any position whose fills were recorded but 
 | max open positions | 3 | **4** | 4 |
 | stop opening after a daily loss of | 15% | **25%** | 35% |
 
-Common to all profiles: equity-floor kill switch at 50% of starting equity (no new positions until
-`earnings-bot reset-kill`), max 2 positions per sector, 3 consecutive losing days → one session pause,
-$200 cash reserve, no position can ever exceed 25% / 85% caps whatever the YAML says, new positions per day ≤ 3.
-The kill switch halts *new* entries; it deliberately does not dump open positions at the open.
+A fourth profile, **`unlimited`** (per position 50%, 100% deployable, 3 positions, no daily stop), exists for owners
+who accept losing the deployed capital; the shipped `config.yaml` uses it with the equity floor at 20%. Caps are no
+longer clamped below 100%: the YAML is the owner's decision. The kill switch halts *new* entries; it deliberately does
+not dump open positions at the open. `structures.objective` chooses how a structure is picked: `growth` (Kelly-like
+expected log growth), `aggressive` (highest simulated expected return with a probability-of-profit floor) or `moonshot`
+(highest probability of a 3x). `universe.min_implied_move_pct` restricts the universe to names already priced for an
+extreme move.
 
 **Day-trade limits.** FINRA's $25,000 pattern-day-trader rule was replaced by intraday margin standards (SEC
 approval April 14, 2026; effective June 4, 2026 per broker notices), with an 18-month phase-in for brokers. Some brokers
@@ -108,6 +112,20 @@ and falls back to a local 3-per-5-sessions counter. The core strategy (enter at 
 day trade; only same-day macro plays and same-day salvage of same-day entries are.
 
 ---
+
+## 5b. Agent system
+
+Four Claude roles run inside the daily loop (all optional, all fail-safe, model `claude-opus-5-5` by default):
+
+| Agent | When | Tools | Authority |
+|---|---|---|---|
+| Catalyst researcher | 07:45 | server-side web search + fetch | adds dated non-earnings catalysts (FDA PDUFA, regulatory, product, index, legal) and corrects earnings timing from primary sources |
+| Analyst | 12:30 | structured output | TradeThesis per candidate (direction, expected move vs implied, veto if the event looks wrong) |
+| Risk officer | 15:20 | structured output | reviews the sized plan: approve / reduce / veto, never increase |
+| Ops | 16:05 | structured output | journal in `journal/`, issues, proposals (never applied automatically) |
+
+Researched catalysts enter the same pipeline as earnings (`play_type: catalyst`): the researcher's expected move,
+discounted by its confidence, replaces the reaction history in the score and the simulation.
 
 ## 6. Quick start
 
@@ -200,7 +218,12 @@ Alpaca option volume comes from daily bars (may read 0 early in the session).
 
 ---
 
-## 10. Costs
+## 10. Getting the code off this session
+
+The project lives in `/home/user/catalyst-bot` (git initialised, one commit). Either let the session push it to a
+private GitHub repository you approve, or copy the folder to your machine; then follow `GO_LIVE.md`.
+
+## 11. Costs
 
 IBKR: ~$0.65/contract + fees; OPRA data ~$1.50/month. Alpaca: $0 commission, regulatory fees only. Claude: roughly
 8 analyst calls per day at `claude-opus-5-5`, on the order of a few cents each. Data feeds used by default are free.

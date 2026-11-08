@@ -11,7 +11,8 @@ from pydantic import BaseModel, Field
 Timing = Literal["bmo", "amc", "unknown"]
 Right = Literal["C", "P"]
 StructureKind = Literal["straddle", "strangle", "call", "put"]
-PlayType = Literal["earnings", "macro"]
+PlayType = Literal["earnings", "macro", "catalyst"]
+EventKind = Literal["earnings", "fda", "regulatory", "product", "index", "macro", "legal", "other"]
 
 
 def _json_default(o):
@@ -40,6 +41,10 @@ class EarningsEvent:
     eps_estimate: Optional[float] = None
     confirmed: bool = False
     sources: list[str] = field(default_factory=list)
+    kind: str = "earnings"                      # EventKind; anything but 'earnings' is a researched catalyst
+    expected_move_pct: Optional[float] = None   # researcher's estimate of the absolute move (percent)
+    confidence: Optional[float] = None          # researcher's confidence in date/timing (0-1)
+    notes: str = ""
 
     @property
     def key(self) -> str:
@@ -171,6 +176,43 @@ class TradeThesis(BaseModel):
     key_risks: list[str] = Field(max_length=6)
     data_quality: Literal["good", "mixed", "poor"]
     rationale: str = Field(max_length=900)
+
+
+class CatalystEvent(BaseModel):
+    """One researched scheduled event (output of the research agent)."""
+
+    symbol: str = Field(max_length=8)
+    date: str = Field(description="YYYY-MM-DD of the announcement / decision")
+    timing: Literal["bmo", "amc", "unknown"]
+    kind: EventKind
+    description: str = Field(max_length=300)
+    expected_abs_move_pct: float = Field(ge=0.0, le=100.0, description="typical absolute stock move on this kind of event for this name, percent")
+    confidence: float = Field(ge=0.0, le=1.0, description="confidence the event happens on that date with that timing")
+    source_url: str = ""
+
+
+class ResearchReport(BaseModel):
+    events: list[CatalystEvent] = Field(max_length=40)
+    timing_corrections: list[CatalystEvent] = Field(default_factory=list, max_length=40, description="known earnings events whose timing sources contradict")
+    notes: str = Field(max_length=1500)
+
+
+class PlanDecision(BaseModel):
+    symbol: str
+    action: Literal["approve", "reduce", "veto"]
+    units: Optional[int] = Field(default=None, ge=0, description="new unit count when action == reduce")
+    reason: str = Field(max_length=300)
+
+
+class PlanReview(BaseModel):
+    decisions: list[PlanDecision]
+    overall_note: str = Field(max_length=600)
+
+
+class OpsReport(BaseModel):
+    summary: str = Field(max_length=1500)
+    issues: list[str] = Field(max_length=10)
+    proposals: list[str] = Field(max_length=10, description="config or process changes for the human to consider; never applied automatically")
 
 
 @dataclass

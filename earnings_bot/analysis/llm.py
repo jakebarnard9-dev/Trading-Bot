@@ -51,6 +51,8 @@ def render_packet(c: Candidate, max_headlines: int = 25) -> str:
         f"ESTIMATES: consensus_eps={est.get('eps_avg', e.eps_estimate)} low={est.get('low')} high={est.get('eps_high')} analysts={est.get('analysts')}"
         f" year_ago_eps={est.get('eps_year_ago')} revisions_up_30d={est.get('rev_up_30d')} revisions_down_30d={est.get('rev_down_30d')}",
         f"OPTIONS SKEW: {c.liquidity.get('skew')}",
+        (f"CATALYST (researched, not earnings): kind={st.get('kind')} expected_abs_move={st.get('research_expected_move_pct')}% "
+         f"confidence={st.get('research_confidence')} notes={st.get('notes')}" if c.play_type == "catalyst" else "CATALYST: earnings report"),
         f"PEER REACTIONS THIS SEASON: {f.get('peers') or 'n/a'}",
         "<headlines>",
     ]

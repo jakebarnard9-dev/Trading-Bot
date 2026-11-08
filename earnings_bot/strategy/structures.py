@@ -31,7 +31,11 @@ def pick_expiry(expiries: list[date], reaction: date, max_days_after: int) -> Op
 def expected_abs_vs_implied(c: Candidate) -> float:
     st = c.hist_stats or {}
     n = int(st.get("n", 0))
-    hist = shrink(float(st.get("ratio_median", 1.0)), n, 1.0, 4.0) if n else 1.0
+    if c.play_type == "catalyst" and st.get("research_expected_move_pct") and c.implied_move_pct:
+        conf = max(0.0, min(float(st.get("research_confidence") or 0.0), 1.0))
+        hist = shrink(float(st["research_expected_move_pct"]) / c.implied_move_pct, 1, 1.0, 1.0 + (1.0 - conf) * 3.0)
+    else:
+        hist = shrink(float(st.get("ratio_median", 1.0)), n, 1.0, 4.0) if n else 1.0
     hist = max(0.6, min(hist, 1.6))
     llm = 1.0
     if c.thesis is not None:
@@ -93,9 +97,8 @@ def choose_structure(c: Candidate, chain: OptionChain, cfg: Config, now: datetim
         cq, pq = chain.call(k), chain.put(k)
         if cq and pq:
             evaluate("straddle", [cq, pq], f"ATM straddle @ {k:g}")
-    for w in (0.25, cfg.structures.strangle_max_width_vs_implied):
-        if w <= 0:
-            continue
+    widths = sorted({w for w in list(cfg.structures.strangle_widths) + [cfg.structures.strangle_max_width_vs_implied] if w > 0})
+    for w in widths:
         up = [k for k in strikes if k > S and (k / S - 1) * 100 <= w * im]
         dn = [k for k in strikes if k < S and (1 - k / S) * 100 <= w * im]
         if up and dn:
@@ -106,23 +109,45 @@ def choose_structure(c: Candidate, chain: OptionChain, cfg: Config, now: datetim
     if th and th.direction != "neutral" and th.direction_confidence >= cfg.structures.directional_min_confidence:
         right = "C" if th.direction == "bullish" else "P"
         pool = chain.calls if right == "C" else chain.puts
-        target = cfg.structures.directional_target_delta
-        scored = []
-        for q in pool:
-            iv = quote_iv(q, S, T_now) or atm_iv
-            d = abs(q.delta) if q.delta is not None else abs(bs_delta(S, q.key.strike, T_now, iv, right))
-            scored.append((abs(d - target), q))
-        scored.sort(key=lambda x: x[0])
-        for _, q in scored[:2]:
-            evaluate("call" if right == "C" else "put", [q], f"{th.direction} {right} @ {q.key.strike:g} (delta~{target}), confidence {th.direction_confidence:.2f}")
+        deltas = sorted({cfg.structures.directional_target_delta, *cfg.structures.directional_deltas}, reverse=True)
+        seen: set[float] = set()
+        for target in deltas:
+            scored = []
+            for q in pool:
+                iv = quote_iv(q, S, T_now) or atm_iv
+                d = abs(q.delta) if q.delta is not None else abs(bs_delta(S, q.key.strike, T_now, iv, right))
+                scored.append((abs(d - target), q))
+            scored.sort(key=lambda x: x[0])
+            for _, q in scored[:2]:
+                if q.key.strike in seen:
+                    continue
+                seen.add(q.key.strike)
+                evaluate("call" if right == "C" else "put", [q], f"{th.direction} {right} @ {q.key.strike:g} (delta~{target}), confidence {th.direction_confidence:.2f}")
     if not results:
         return None
-    results.sort(key=lambda x: x[0], reverse=True)
-    best_growth, best = results[0]
-    if best.sim.get("expected_return", -1) <= 0.03 or best_growth <= 0:
-        log.info("%s: best structure %s has non-positive edge (ER %.1f%%, growth %.4f) -> no trade", c.symbol, best.kind, 100 * best.sim.get("expected_return", 0), best_growth)
+    return select_by_objective(results, cfg.structures.objective, cfg.structures.min_expected_return, cfg.structures.aggressive_min_p_profit, c.symbol)
+
+
+def select_by_objective(results: list[tuple[float, StructurePlan]], objective: str, min_er: float, min_p_profit: float, symbol: str = "") -> Optional[StructurePlan]:
+    """growth: best expected log-growth (Kelly-like). aggressive: highest expected return with a floor on the probability
+    of profit. moonshot: highest probability of a 3x with positive expected return. All require positive edge after crush."""
+    viable = [(g, pl) for g, pl in results if pl.sim.get("expected_return", -1) > min_er]
+    if objective == "growth":
+        viable = [(g, pl) for g, pl in viable if g > 0]
+        viable.sort(key=lambda x: x[0], reverse=True)
+    elif objective == "aggressive":
+        viable = [(g, pl) for g, pl in viable if pl.sim.get("p_profit", 0) >= min_p_profit]
+        viable.sort(key=lambda x: x[1].sim.get("expected_return", 0), reverse=True)
+    else:  # moonshot
+        viable = [(g, pl) for g, pl in viable if pl.sim.get("p_profit", 0) >= min_p_profit]
+        viable.sort(key=lambda x: (x[1].sim.get("p_triple", 0), x[1].sim.get("expected_return", 0)), reverse=True)
+    if not viable:
+        best = max(results, key=lambda x: x[1].sim.get("expected_return", -9))[1] if results else None
+        if best is not None:
+            log.info("%s: no structure clears the %s objective (best ER %.1f%%, p_profit %.0f%%) -> no trade", symbol, objective,
+                     100 * best.sim.get("expected_return", 0), 100 * best.sim.get("p_profit", 0))
         return None
-    return best
+    return viable[0][1]
 
 
 def skew_snapshot(chain: OptionChain, spot: float, T: float) -> dict:

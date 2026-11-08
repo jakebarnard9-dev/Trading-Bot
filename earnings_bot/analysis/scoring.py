@@ -64,17 +64,26 @@ def quant_score(c: Candidate, scfg: ScoringCfg) -> tuple[float, dict]:
     w = scfg.weights
     st = c.hist_stats or {}
     n = int(st.get("n", 0))
-    r = shrink(st.get("ratio_median", 0.95), n, 0.95) if n else 0.95
-    hist_pts = w.hist_ratio * clip01((r - 0.75) / 0.55)
-    f = shrink(st.get("big_beat_rate", 0.30), n, 0.30) if n else 0.30
-    big_pts = w.big_move_freq * clip01((f - 0.20) / 0.50)
+    if c.play_type == "catalyst":
+        # researched non-earnings catalyst: no reaction history, so the researcher's expected move (shrunk by its
+        # confidence) stands in for the historical ratio
+        exp_move = float(st.get("research_expected_move_pct") or 0.0)
+        conf = clip01(float(st.get("research_confidence") or 0.0))
+        r = shrink(exp_move / c.implied_move_pct, 1, 0.95, 1.0) if (exp_move and c.implied_move_pct) else 0.95
+        hist_pts = w.hist_ratio * clip01((r - 0.75) / 0.55) * (0.5 + 0.5 * conf)
+        big_pts = w.big_move_freq * clip01((r - 1.0) / 0.6) * conf
+    else:
+        r = shrink(st.get("ratio_median", 0.95), n, 0.95) if n else 0.95
+        hist_pts = w.hist_ratio * clip01((r - 0.75) / 0.55)
+        f = shrink(st.get("big_beat_rate", 0.30), n, 0.30) if n else 0.30
+        big_pts = w.big_move_freq * clip01((f - 0.20) / 0.50)
     liq_pts = w.liquidity * float((c.liquidity or {}).get("quality", 0.0))
     cat = catalyst_score(c)
     cat_pts = w.catalyst * cat
     pen = scfg.unknown_timing_penalty if c.event.timing == "unknown" else 0.0
     score = hist_pts + big_pts + liq_pts + cat_pts - pen
     return score, {
-        "hist_ratio_shrunk": round(r, 3), "hist_pts": round(hist_pts, 1), "big_beat_shrunk": round(f, 3), "big_pts": round(big_pts, 1),
+        "hist_ratio_shrunk": round(r, 3), "hist_pts": round(hist_pts, 1), "big_pts": round(big_pts, 1),
         "liq_pts": round(liq_pts, 1), "catalyst": round(cat, 3), "cat_pts": round(cat_pts, 1), "timing_penalty": pen, "n_hist": n,
     }
 
