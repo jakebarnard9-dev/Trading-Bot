@@ -22,16 +22,18 @@ from earnings_bot.notify import Notifier
 from earnings_bot.state.store import Store
 
 
-def replay_config(base: Config | None = None, **risk_overrides) -> Config:
+def replay_config(base: Config | None = None, keep_strategy: bool = False, **risk_overrides) -> Config:
+    """keep_strategy=True leaves the shipped risk/structure/universe settings untouched (tests the real mandate)."""
     cfg = copy.deepcopy(base) if base else load_config(Path(__file__).resolve().parent.parent / "config.yaml")
     cfg.mode, cfg.broker = "paper", "paper"
     cfg.account.starting_equity = cfg.account.initial_equity_for_floor = 5000.0
-    cfg.risk.profile, cfg.risk.per_trade_pct, cfg.risk.max_deployed_pct, cfg.risk.max_open_positions, cfg.risk.daily_loss_limit_pct = "aggressive", 0.12, 0.60, 4, 0.25
-    cfg.universe.min_market_cap = 1.5e9
-    cfg.universe.min_implied_move_pct = 0.0
-    cfg.structures.objective = "growth"
-    cfg.structures.strangle_widths, cfg.structures.directional_deltas = [0.25, 0.5], [0.40]
-    cfg.options.max_days_to_expiry_after_reaction = 7
+    if not keep_strategy:
+        cfg.risk.profile, cfg.risk.per_trade_pct, cfg.risk.max_deployed_pct, cfg.risk.max_open_positions, cfg.risk.daily_loss_limit_pct = "aggressive", 0.12, 0.60, 4, 0.25
+        cfg.universe.min_market_cap = 1.5e9
+        cfg.universe.min_implied_move_pct = 0.0
+        cfg.structures.objective = "growth"
+        cfg.structures.strangle_widths, cfg.structures.directional_deltas = [0.25, 0.5], [0.40]
+        cfg.options.max_days_to_expiry_after_reaction = 7
     cfg.llm.enabled = False
     cfg.agents.enabled = False
     cfg.notify.telegram = cfg.notify.discord = False
@@ -43,14 +45,14 @@ def replay_config(base: Config | None = None, **risk_overrides) -> Config:
 
 async def run_replay(cfg: Config | None = None, gap_pct: float = 9.0, post_iv: float = 0.5, db_path: str | None = None,
                      analyst=None, macro: bool = False, verbose: bool = False, researcher=None, risk_officer=None, ops=None,
-                     bio_gap_pct: float = 30.0) -> dict:
-    cfg = replay_config(cfg)
+                     bio_gap_pct: float = 30.0, keep_strategy: bool = False, good_iv: float = 1.10, good_moves: list | None = None) -> dict:
+    cfg = replay_config(cfg, keep_strategy=keep_strategy)
     if macro:
         cfg.macro.enabled = True
     entry_day, reaction_day, after = date(2026, 11, 12), date(2026, 11, 13), date(2026, 11, 16)
     clock = FakeClock(datetime(2026, 11, 12, 7, 50, tzinfo=ET))
     md = FixtureMarketData(clock.now, {
-        "GOOD": dict(spot=100.0, iv=1.10, step=2.5, expiries=[date(2026, 11, 13), date(2026, 11, 20)], past_moves=[8, -11, 6, -4, 13, -9, 7, 10], sector="Technology", market_cap=2e10, name="Good Corp"),
+        "GOOD": dict(spot=100.0, iv=good_iv, step=2.5, expiries=[date(2026, 11, 13), date(2026, 11, 20)], past_moves=good_moves or [8, -11, 6, -4, 13, -9, 7, 10], sector="Technology", market_cap=2e10, name="Good Corp"),
         "DULL": dict(spot=50.0, iv=0.60, step=1.0, expiries=[date(2026, 11, 13), date(2026, 11, 20)], past_moves=[1, -2, 1.5, -1, 2, -1.5, 1, 0.5], sector="Utilities", market_cap=3e10, name="Dull Utility"),
         "SMALL": dict(spot=20.0, iv=1.50, step=0.5, expiries=[date(2026, 11, 13)], past_moves=[20, -25, 18], sector="Healthcare", market_cap=5e8, name="Small Bio"),
         "SPY": dict(spot=600.0, iv=0.14, step=1.0, expiries=[date(2026, 11, 13), date(2026, 11, 16)], past_moves=[], sector="Index", market_cap=1e12, name="SPDR S&P 500"),

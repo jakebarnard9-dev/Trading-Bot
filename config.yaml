@@ -67,8 +67,8 @@ risk:
 
 exits:
   salvage_leg_below_pct: 0.25      # sell a straddle/strangle leg once it is worth < 25% of its cost
-  take_half_at_gain_pct: 1.00      # at +100% sell half, trail the rest
-  trail_pct_from_high: 0.25
+  take_half_at_gain_pct: 1.50      # at +150% sell half, trail the rest (high-risk mandate: let winners run)
+  trail_pct_from_high: 0.30
   trail_floor_gain_pct: 0.50
   hard_stop_loss_pct: 0.60
   hard_stop_not_before: "09:45"
