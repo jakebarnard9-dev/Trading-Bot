@@ -9,7 +9,7 @@ installs dependencies, runs the checks and asks you for the key (step 2).
 **Line:** the first one:
 
 ```
-ANTHROPIC_API_KEY=sk-ant-api03-PASTE-YOUR-KEY-HERE
+ANTHROPIC_API_KEY=sk-ant-api03-sk-ant-usr-1HZ...3wAA
 ```
 
 - Paste the key straight after the `=` sign: no spaces, no quotes.
