@@ -5,11 +5,14 @@ Double-click **INSTALL.bat**. It installs Python and Git if needed, puts the bot
 installs dependencies, runs the checks and asks you for the key (step 2).
 
 ## 2. THE API KEY GOES HERE
-**File:** `C:\catalyst-bot\.env`   (INSTALL.bat creates it; or copy `.env.example` to `.env` yourself)
+**File:** `C:\catalyst-bot\.env` on your PC   (INSTALL.bat creates it; or copy `.env.example` to `.env` yourself)
 **Line:** the first one:
 
+> **Do NOT type the key into this file, into `.env.example`, or anywhere on GitHub.** This repository is
+> public; anything committed here is visible to everyone. The example below is a placeholder, not a key.
+
 ```
-ANTHROPIC_API_KEY=sk-ant-api03-sk-ant-usr-1HZ...3wAA
+ANTHROPIC_API_KEY=sk-ant-api03-PASTE-YOUR-KEY-HERE
 ```
 
 - Paste the key straight after the `=` sign: no spaces, no quotes.
